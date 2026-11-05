@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>口播字幕小幫手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* 版面:單欄、大字、三個真正有順序的步驟。主色取自影視字幕常見的黃字,配深藍底當「螢幕」 */
+:root{
+  --bg:#f3f5f8; --surface:#ffffff; --ink:#18212e; --muted:#5b6678;
+  --line:#d9dee6; --screen:#16202d; --sub:#ffd23f; --sub-ink:#2a2200;
+  --ok:#1f7a4d; --err:#b3261e; --accent:#1d5fa8;
+  --f-body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f141b; --surface:#18202b; --ink:#e8edf4; --muted:#9aa6b8;
+  --line:#2b3644; --screen:#0a0e14; --sub:#ffd23f; --sub-ink:#2a2200;
+  --ok:#5cc28d; --err:#ff8a80; --accent:#7fb2ec; color-scheme:dark;}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.65 var(--f-body);
+  padding:env(safe-area-inset-top,0) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0) max(16px,env(safe-area-inset-left,0px))}
+.wrap{max-width:780px;margin:0 auto;padding-block:28px 64px;display:flex;flex-direction:column;gap:22px}
+header{background:var(--screen);color:#fff;border-radius:16px;padding:28px 24px 24px;position:relative;overflow:hidden}
+header h1{margin:0;font-size:clamp(28px,6vw,40px);font-weight:900;letter-spacing:.02em;text-wrap:balance}
+header h1 span{background:var(--sub);color:var(--sub-ink);padding:0 .25em;border-radius:4px}
+header p{margin:10px 0 0;color:#c9d3e0;max-width:34em}
+.tabs{display:flex;gap:8px;flex-wrap:wrap}
+.tab{flex:1 1 220px;font:700 18px var(--f-body);padding:14px 16px;border-radius:12px;border:2px solid var(--line);
+  background:var(--surface);color:var(--ink);cursor:pointer}
+.tab[aria-selected="true"]{border-color:var(--ink);background:var(--ink);color:var(--bg)}
+.step{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px 20px;display:flex;flex-direction:column;gap:14px}
+.step h2{margin:0;font-size:22px;display:flex;align-items:center;gap:12px}
+.num{flex:none;width:36px;height:36px;border-radius:50%;background:var(--sub);color:var(--sub-ink);
+  display:grid;place-items:center;font-weight:900;font-size:20px}
+.hint{margin:0;color:var(--muted);font-size:16px}
+.drop{border:3px dashed var(--line);border-radius:14px;padding:30px 16px;text-align:center;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:8px;transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.drop strong{font-size:20px}
+.drop .file{font-weight:700;color:var(--ok);word-break:break-all}
+.btn{font:900 20px var(--f-body);padding:16px 22px;border-radius:12px;border:0;cursor:pointer;
+  background:var(--ink);color:var(--bg);min-height:58px}
+.btn.big{width:100%;font-size:22px}
+.btn.yellow{background:var(--sub);color:var(--sub-ink)}
+.btn.ghost{background:transparent;color:var(--ink);border:2px solid var(--line);font-weight:700;font-size:17px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:focus-visible,.tab:focus-visible,.drop:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row > .btn{flex:1 1 200px}
+details{border-top:1px solid var(--line);padding-top:10px}
+summary{cursor:pointer;color:var(--muted);font-size:16px;font-weight:700}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-top:12px}
+.opts label{display:flex;flex-direction:column;gap:6px;font-size:16px;font-weight:500}
+.opts label.check{flex-direction:row;align-items:center;gap:10px}
+select,input[type=number]{font:18px var(--f-body);padding:10px;border-radius:10px;border:2px solid var(--line);background:var(--bg);color:var(--ink)}
+input[type=checkbox]{width:24px;height:24px}
+.status{display:flex;flex-direction:column;gap:8px}
+.status p{margin:0;font-weight:700}
+.bar{height:14px;background:var(--line);border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--sub);transition:width .3s}
+.bar.indet i{width:35%;animation:slide 1.3s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+@media (prefers-reduced-motion:reduce){.bar.indet i{animation:none;width:100%;opacity:.6}}
+.msg-err{color:var(--err)} .msg-ok{color:var(--ok)}
+.subs{display:flex;flex-direction:column;gap:6px;max-height:460px;overflow-y:auto;padding-right:4px}
+.sub{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:center}
+.sub time{font:500 13px var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sub input{min-width:0;font:18px var(--f-body);padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.empty{color:var(--muted);font-size:16px;margin:0}
+@media (max-width:480px){.sub{grid-template-columns:1fr;gap:2px}}
+.note{font-size:15px;color:var(--muted);line-height:1.6}
+.note b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>口播<span>字幕</span>小幫手</h1>
+    <p>把口播的音檔丟進來,自動聽打成字幕,直接變成台灣繁體的 SRT 檔,再匯回 CapCut 就完成了。</p>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tabA" aria-selected="true">🎙️ 音檔 → 繁體字幕</button>
+    <button class="tab" role="tab" id="tabB" aria-selected="false">🔁 簡體 SRT → 繁體</button>
+  </div>
+
+  <!-- ===== 模式 A:音檔轉字幕 ===== -->
+  <section id="modeA" style="display:flex;flex-direction:column;gap:22px">
+    <div class="step">
+      <h2><span class="num">1</span>選擇口播音檔</h2>
+      <label class="drop" id="dropA" tabindex="0">
+        <strong>點這裡選檔案</strong>
+        <span class="hint">或把檔案拖進來 · mp3、wav、m4a、mp4 都可以</span>
+        <span class="file" id="fileNameA"></span>
+        <input type="file" id="fileA" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.mp4,.mov" hidden>
+      </label>
+      <details>
+        <summary>進階設定(不懂可以不用動)</summary>
+        <div class="opts">
+          <label>辨識模式
+            <select id="model">
+              <option value="auto">自動(建議)</option>
+              <option value="small">準確(較慢)</option>
+              <option value="base">快速(較不準)</option>
+            </select>
+          </label>
+          <label>每句最多幾個字
+            <input type="number" id="maxChars" value="12" min="6" max="30">
+          </label>
+          <label class="check"><input type="checkbox" id="noPunct" checked>把標點符號換成空格</label>
+        </div>
+      </details>
+    </div>
+
+    <div class="step">
+      <h2><span class="num">2</span>開始轉字幕</h2>
+      <button class="btn big yellow" id="goA" disabled>開始轉字幕</button>
+      <div class="status" id="statusA" hidden>
+        <p id="statusTextA"></p>
+        <div class="bar" id="barA"><i></i></div>
+        <p class="hint" id="statusSubA"></p>
+      </div>
+      <p class="hint">第一次使用會先下載 AI 模型(約 1~3 分鐘),之後就不用再等。轉的時候請不要關掉這個頁面。</p>
+    </div>
+
+    <div class="step">
+      <h2><span class="num">3</span>檢查字幕,下載 SRT</h2>
+      <p class="hint">錯字可以直接在框框裡改,改完再按下載。</p>
+      <div class="subs" id="subsA"><p class="empty">轉好的字幕會出現在這裡。</p></div>
+      <div class="row">
+        <button class="btn" id="dlA" disabled>⬇ 下載字幕檔(SRT)</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 模式 B:簡體 SRT 轉繁體 ===== -->
+  <section id="modeB" style="display:none;flex-direction:column;gap:22px">
+    <div class="step">
+      <h2><span class="num">1</span>選擇簡體的 SRT 字幕檔</h2>
+      <label class="drop" id="dropB" tabindex="0">
+        <strong>點這裡選 SRT 檔</strong>
+        <span class="hint">或把檔案拖進來</span>
+        <span class="file" id="fileNameB"></span>
+        <input type="file" id="fileB" accept=".srt,.txt,text/plain" hidden>
+      </label>
+    </div>
+    <div class="step">
+      <h2><span class="num">2</span>下載繁體版</h2>
+      <p class="hint" id="previewB">選好檔案後,這裡會顯示轉好的前幾行。</p>
+      <button class="btn big yellow" id="dlB" disabled>⬇ 下載繁體字幕檔</button>
+    </div>
+  </section>
+
+  <p class="note"><b>怎麼放回 CapCut:</b>在 CapCut 的字幕/文字功能裡找「匯入字幕」或「本地字幕」,選剛剛下載的 .srt 檔就好。<br>
+  <b>建議:</b>用電腦版 Chrome 或 Edge 開這個網頁最快。音檔只會在你自己的電腦裡處理,不會上傳到任何地方。</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/opencc-js@1.0.5/dist/umd/full.js"></script>
+<script>
+/* ---------- 簡轉繁(台灣用語) ---------- */
+let toTW = s => s;
+try { toTW = OpenCC.Converter({ from: 'cn', to: 'twp' }); } catch (e) { console.error(e); }
+
+/* ---------- 分頁 ---------- */
+const $ = id => document.getElementById(id);
+function showTab(a) {
+  $('tabA').setAttribute('aria-selected', a); $('tabB').setAttribute('aria-selected', !a);
+  $('modeA').style.display = a ? 'flex' : 'none'; $('modeB').style.display = a ? 'none' : 'flex';
+}
+$('tabA').onclick = () => showTab(true);
+$('tabB').onclick = () => showTab(false);
+
+/* ---------- 拖放 ---------- */
+function setupDrop(dropId, inputId, onFile) {
+  const drop = $(dropId), input = $(inputId);
+  input.onchange = () => input.files[0] && onFile(input.files[0]);
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } };
+  ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => e.dataTransfer.files[0] && onFile(e.dataTransfer.files[0]));
+}
+
+/* ---------- SRT 工具 ---------- */
+function fmt(t) {
+  t = Math.max(0, t); const ms = Math.round(t * 1000);
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60, r = ms % 1000;
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${p(h)}:${p(m)}:${p(s)},${p(r, 3)}`;
+}
+function buildSrt(list) {
+  return list.filter(x => x.text.trim()).map((x, i) => `${i + 1}\n${fmt(x.start)} --> ${fmt(x.end)}\n${x.text.trim()}\n`).join('\n');
+}
+function download(text, name) {
+  const blob = new Blob([text], { type: 'application/x-subrip;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+const baseName = f => f.name.replace(/\.[^.]+$/, '');
+
+/* ---------- 斷句 ---------- */
+const P = '，。！？、；：,.!?;:…~～「」『』（）()"\'';
+const isP = c => P.includes(c) || /\s/.test(c);
+const vlen = s => [...s].filter(c => !isP(c)).length;
+function splitSeg(text, start, end, maxChars) {
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!vlen(text)) return [];
+  const re = new RegExp(`[^${P.replace(/[\]\\^-]/g, '\\$&')} ]+[${P.replace(/[\]\\^-]/g, '\\$&')} ]*`, 'g');
+  const parts = text.match(re) || [text];
+  const pieces = [];
+  for (const p of parts) {
+    if (vlen(p) <= maxChars) { pieces.push(p); continue; }
+    const cs = [...p]; for (let i = 0; i < cs.length; i += maxChars) pieces.push(cs.slice(i, i + maxChars).join(''));
+  }
+  const lines = []; let cur = '';
+  for (const p of pieces) { if (cur && vlen(cur + p) > maxChars) { lines.push(cur); cur = p; } else cur += p; }
+  if (cur) lines.push(cur);
+  const total = lines.reduce((a, l) => a + vlen(l), 0) || 1;
+  let t = start;
+  return lines.filter(l => vlen(l)).map(l => { const d = (end - start) * vlen(l) / total; const o = { start: t, end: t + d, text: l }; t += d; return o; });
+}
+function cleanText(s, noPunct) {
+  s = s.trim();
+  if (noPunct) s = s.replace(/[，。！？、；：,.!?;:…~～]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return s;
+}
+function chunksToSubs(chunks, duration, maxChars, noPunct) {
+  const out = []; let last = '';
+  chunks.forEach((c, i) => {
+    let [s, e] = c.timestamp || [0, null];
+    if (s == null) s = out.length ? out[out.length - 1].end : 0;
+    if (e == null || e <= s) e = chunks[i + 1]?.timestamp?.[0] ?? duration;
+    if (e <= s) e = s + 1;
+    const txt = toTW(c.text || '');
+    if (txt.trim() === last) return;           // 去掉 AI 偶爾重複的同一句
+    last = txt.trim();
+    splitSeg(txt, s, e, maxChars).forEach(x => { x.text = cleanText(x.text, noPunct); if (x.text) out.push(x); });
+  });
+  return out;
+}
+
+/* ---------- 音訊解碼(轉成 16kHz 單聲道) ---------- */
+async function decodeAudio(file) {
+  const buf = await file.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  const decoded = await new Promise((res, rej) => ctx.decodeAudioData(buf, res, rej));
+  ctx.close && ctx.close();
+  const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+  const rendered = await off.startRendering();
+  return { data: rendered.getChannelData(0), duration: decoded.duration };
+}
+
+/* ---------- AI 辨識(在背景執行緒跑,畫面不會卡) ---------- */
+const workerCode = `
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
+env.allowLocalModels = false;
+let asr = null, key = '';
+async function hasWebGPU() {
+  try { const a = navigator.gpu && await navigator.gpu.requestAdapter(); return a ? { f16: a.features.has('shader-f16') } : null; } catch { return null; }
+}
+async function load(size, gpu) {
+  const id = 'onnx-community/whisper-' + size;
+  const progress_callback = p => self.postMessage({ type: 'load', p });
+  if (gpu) {
+    try {
+      return await pipeline('automatic-speech-recognition', id, { device: 'webgpu', progress_callback,
+        dtype: { encoder_model: gpu.f16 ? 'fp16' : 'fp32', decoder_model_merged: 'q4' } });
+    } catch (e) { self.postMessage({ type: 'note', msg: '顯示卡加速無法使用,改用一般模式' }); }
+  }
+  return await pipeline('automatic-speech-recognition', id, { device: 'wasm', dtype: 'q8', progress_callback });
+}
+self.onmessage = async (e) => {
+  const { audio, model } = e.data;
+  try {
+    const gpu = await hasWebGPU();
+    const size = model === 'auto' ? (gpu ? 'small' : 'base') : model;
+    if (!asr || key !== size) { asr = await load(size, gpu); key = size; }
+    self.postMessage({ type: 'start', size, gpu: !!gpu });
+    const out = await asr(audio, { language: 'chinese', task: 'transcribe', return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 });
+    self.postMessage({ type: 'done', chunks: out.chunks || [{ timestamp: [0, null], text: out.text }] });
+  } catch (err) { self.postMessage({ type: 'error', msg: String((err && err.message) || err) }); }
+};`;
+let worker = null;
+function getWorker() {
+  if (!worker) worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: 'text/javascript' })), { type: 'module' });
+  return worker;
+}
+
+/* ---------- 模式 A 流程 ---------- */
+let fileA = null, subs = [], timer = null, wakeLock = null;
+setupDrop('dropA', 'fileA', f => { fileA = f; $('fileNameA').textContent = '✔ ' + f.name; $('goA').disabled = false; });
+
+function setStatus(text, sub = '', pct = null, cls = '') {
+  $('statusA').hidden = false;
+  const t = $('statusTextA'); t.textContent = text; t.className = cls;
+  $('statusSubA').textContent = sub;
+  const bar = $('barA');
+  bar.style.display = cls === 'msg-ok' || cls === 'msg-err' ? 'none' : '';
+  bar.classList.toggle('indet', pct === null);
+  bar.querySelector('i').style.width = pct === null ? '' : pct + '%';
+}
+function renderSubs() {
+  const box = $('subsA'); box.innerHTML = '';
+  if (!subs.length) { box.innerHTML = '<p class="empty">沒有辨識到說話內容,請確認音檔有聲音。</p>'; return; }
+  subs.forEach((s, i) => {
+    const row = document.createElement('div'); row.className = 'sub';
+    const t = document.createElement('time'); t.textContent = fmt(s.start).slice(3, 8) + ' – ' + fmt(s.end).slice(3, 8);
+    const inp = document.createElement('input'); inp.id = 'sub' + i; inp.value = s.text;
+    inp.oninput = () => { subs[i].text = inp.value; };
+    row.append(t, inp); box.append(row);
+  });
+}
+
+$('goA').onclick = async () => {
+  if (!fileA) return;
+  $('goA').disabled = true; $('dlA').disabled = true;
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  setStatus('正在讀取音檔…');
+  let audio;
+  try { audio = await decodeAudio(fileA); }
+  catch (e) { setStatus('這個檔案讀不出聲音', '請改用 mp3、wav 或 m4a 音檔再試一次。', null, 'msg-err'); $('goA').disabled = false; return; }
+
+  const files = {};
+  const w = getWorker();
+  const t0 = Date.now();
+  w.onmessage = ({ data: m }) => {
+    if (m.type === 'load' && m.p.status === 'progress' && m.p.total) {
+      files[m.p.file] = m.p;
+      let l = 0, T = 0; Object.values(files).forEach(f => { l += f.loaded; T += f.total; });
+      setStatus('第一次使用,正在下載 AI 模型…', `${(l / 1048576).toFixed(0)} / ${(T / 1048576).toFixed(0)} MB(下載完之後就不用再等)`, Math.round(l / T * 100));
+    } else if (m.type === 'note') {
+      $('statusSubA').textContent = m.msg;
+    } else if (m.type === 'start') {
+      const len = Math.round(audio.duration);
+      clearInterval(timer);
+      const tick = () => setStatus('AI 正在聽打字幕…', `音檔長度 ${Math.floor(len / 60)} 分 ${len % 60} 秒 · 已經過 ${Math.round((Date.now() - t0) / 1000)} 秒 · ${m.gpu ? '顯示卡加速中' : '一般模式(會比較久)'}`);
+      tick(); timer = setInterval(tick, 1000);
+    } else if (m.type === 'done') {
+      clearInterval(timer);
+      const maxC = Math.min(30, Math.max(6, parseInt($('maxChars').value) || 12));
+      subs = chunksToSubs(m.chunks, audio.duration, maxC, $('noPunct').checked);
+      renderSubs();
+      setStatus(`完成!共 ${subs.length} 句字幕`, '往下檢查一下有沒有錯字,然後按下載。', 100, 'msg-ok');
+      $('dlA').disabled = !subs.length; $('goA').disabled = false;
+      wakeLock?.release?.().catch(() => {});
+    } else if (m.type === 'error') {
+      clearInterval(timer);
+      setStatus('轉換失敗', '請確認網路有連線、重新整理頁面再試一次。(' + m.msg + ')', null, 'msg-err');
+      $('goA').disabled = false; worker?.terminate(); worker = null;
+    }
+  };
+  setStatus('正在準備 AI…');
+  w.postMessage({ audio: audio.data, model: $('model').value }, [audio.data.buffer]);
+};
+$('dlA').onclick = () => download(buildSrt(subs), baseName(fileA) + '.srt');
+
+/* ---------- 模式 B:簡體 SRT 轉繁體 ---------- */
+let outB = '', nameB = '';
+setupDrop('dropB', 'fileB', async f => {
+  $('fileNameB').textContent = '✔ ' + f.name;
+  const text = (await f.text()).replace(/^﻿/, '');
+  outB = toTW(text); nameB = baseName(f) + '_繁體.srt';
+  const preview = outB.split(/\r?\n/).filter(l => l.trim() && !/^\d+$/.test(l.trim()) && !l.includes('-->')).slice(0, 4);
+  $('previewB').innerHTML = '已轉好,前幾行長這樣:<br><b>' + preview.map(s => s.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c])).join('<br>') + '</b>';
+  $('dlB').disabled = false;
+});
+$('dlB').onclick = () => download(outB, nameB);
+</script>
+</body>
+</html>
