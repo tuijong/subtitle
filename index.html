@@ -110,9 +110,13 @@ input[type=checkbox]{width:24px;height:24px}
               <option value="base">快速(較不準)</option>
             </select>
           </label>
-          <label>每句最多幾個字
-            <input type="number" id="maxChars" value="12" min="6" max="30">
+          <label>每句最少幾個字
+            <input type="number" id="minChars" value="5" min="2" max="20">
           </label>
+          <label>每句最多幾個字
+            <input type="number" id="maxChars" value="8" min="4" max="30">
+          </label>
+          <label class="check"><input type="checkbox" id="fillGap" checked>字幕前後貼緊(不留空檔)</label>
           <label class="check"><input type="checkbox" id="noPunct" checked>把標點符號換成空格</label>
         </div>
       </details>
@@ -131,7 +135,7 @@ input[type=checkbox]{width:24px;height:24px}
 
     <div class="step">
       <h2><span class="num">3</span>檢查字幕,下載 SRT</h2>
-      <p class="hint">錯字可以直接在框框裡改,改完再按下載。</p>
+      <p class="hint">錯字可以直接在框框裡改,改完再按下載。<br><b>快捷鍵:</b>游標放在要斷開的地方按 <kbd>Enter</kbd> 拆成兩句;游標放在句首按 <kbd>Backspace</kbd> 和上一句合併;<kbd>↑</kbd> <kbd>↓</kbd> 在句子之間移動。<br>想調整每句字數,打開上面的「進階設定」修改,字幕會馬上重排,不用重新辨識(但已經改過的錯字會還原,建議先調字數再改字)。</p>
       <div class="subs" id="subsA"><p class="empty">轉好的字幕會出現在這裡。</p></div>
       <div class="row">
         <button class="btn" id="dlA" disabled>⬇ 下載字幕檔(SRT)</button>
@@ -194,7 +198,9 @@ function fmt(t) {
   return `${p(h)}:${p(m)}:${p(s)},${p(r, 3)}`;
 }
 function buildSrt(list) {
-  return list.filter(x => x.text.trim()).map((x, i) => `${i + 1}\n${fmt(x.start)} --> ${fmt(x.end)}\n${x.text.trim()}\n`).join('\n');
+  list = list.filter(x => x.text.trim()).map(x => ({ ...x }));
+  if (document.getElementById('fillGap')?.checked) fillGaps(list);
+  return list.map((x, i) => `${i + 1}\n${fmt(x.start)} --> ${fmt(x.end)}\n${x.text.trim()}\n`).join('\n');
 }
 function download(text, name) {
   const blob = new Blob([text], { type: 'application/x-subrip;charset=utf-8' });
@@ -207,43 +213,108 @@ const baseName = f => f.name.replace(/\.[^.]+$/, '');
 
 /* ---------- 斷句 ---------- */
 const P = '，。！？、；：,.!?;:…~～「」『』（）()"\'';
+const STRONG = '。！？!?…';
 const isP = c => P.includes(c) || /\s/.test(c);
 const vlen = s => [...s].filter(c => !isP(c)).length;
-function splitSeg(text, start, end, maxChars) {
-  text = text.replace(/\s+/g, ' ').trim();
-  if (!vlen(text)) return [];
-  const re = new RegExp(`[^${P.replace(/[\]\\^-]/g, '\\$&')} ]+[${P.replace(/[\]\\^-]/g, '\\$&')} ]*`, 'g');
-  const parts = text.match(re) || [text];
-  const pieces = [];
-  for (const p of parts) {
-    if (vlen(p) <= maxChars) { pieces.push(p); continue; }
-    const cs = [...p]; for (let i = 0; i < cs.length; i += maxChars) pieces.push(cs.slice(i, i + maxChars).join(''));
+const core = s => [...s].filter(c => !isP(c)).join('');
+// 不適合放在一行開頭的字(要黏著前一個詞)
+const TAIL = new Set([...'的了嗎吧呢啊喔哦呀啦嘛們著過得地之唷欸耶囉喲咧']);
+// 不適合放在一行結尾的詞(要黏著後一個詞)
+const HEAD_STRONG = new Set(['在','把','被','讓','給','跟','和','與','對','從','向','往','為','比','像','當','因為','所以','但是','但','可是','如果','而且','還有','然後','或是','或者','以及','並且','雖然','不過','只要','只有','除了','關於','透過','一個','這個','那個','這些','那些','這樣','那樣','一些','每個','我的','你的','他的','她的','我們的','你們的','大家的']);
+const HEAD_SOFT = new Set(['我','你','他','她','它','我們','你們','他們','她們','大家','快','超','好','就','也','都','還','很','最','更','太','不','沒','沒有','要','會','可以','能','想','非常','真的','其實','一定','已經','正在','一起','一直','開始','覺得','知道','告訴','希望','需要','應該','是','有','叫','去','來','用','做','說','看','讓我','幫你','教你']);
+// 這些詞要黏著前面(例如「拍攝的時候」)
+const TAIL_WORDS = new Set(['時候','之後','以後','之前','以前','一下','起來','出來','下來','上去','進去','而已','一樣','左右','之間','當中','裡面','上面','部分']);
+// 適合放在一行開頭的詞(在它前面斷開很自然)
+const LINE_START = new Set(['其實','所以','但是','因為','如果','然後','而且','不過','可是','只要','還有','為什麼','現在','今天','接下來','最後','第一','第二','第三','記得','那','那麼','因此','另外','像是','例如','比如']);
+const NUM = /[0-9０-９一二三四五六七八九十百千萬兩幾半]$/;
+const segmenter = (() => { try { return new Intl.Segmenter('zh-Hant', { granularity: 'word' }); } catch (e) { return null; } })();
+
+function toUnits(text) {
+  const parts = segmenter ? [...segmenter.segment(text)].map(s => s.segment) : [...text];
+  const units = [];
+  for (const t of parts) {
+    if (vlen(t) === 0) {                 // 標點或空白:黏到前一個詞後面,並標記為好斷點
+      if (!units.length) continue;
+      const u = units[units.length - 1]; u.t += t;
+      const b = [...t].some(c => STRONG.includes(c)) ? 3 : /^\s+$/.test(t) ? 1.5 : 2;
+      u.brk = Math.max(u.brk, b); continue;
+    }
+    units.push({ t, n: vlen(t), w: core(t), brk: 0, gap: 0 });
   }
-  const lines = []; let cur = '';
-  for (const p of pieces) { if (cur && vlen(cur + p) > maxChars) { lines.push(cur); cur = p; } else cur += p; }
-  if (cur) lines.push(cur);
-  const total = lines.reduce((a, l) => a + vlen(l), 0) || 1;
-  let t = start;
-  return lines.filter(l => vlen(l)).map(l => { const d = (end - start) * vlen(l) / total; const o = { start: t, end: t + d, text: l }; t += d; return o; });
+  return units;
+}
+function breakCost(a, b) {               // 在 a、b 之間斷開的代價(越小越好)
+  let c = a.brk ? -a.brk * 3 : 3;
+  if (a.gap > 0.4) c -= 4;               // 講者有停頓,適合斷
+  if (HEAD_STRONG.has(a.w)) c += 10; else if (HEAD_SOFT.has(a.w)) c += 4;
+  if (TAIL.has(b.w) || (b.w.length <= 2 && TAIL.has(b.w[0]) && !a.brk)) c += 9;
+  if (!a.brk && NUM.test(a.w) && b.w.length === 1) c += 6;   // 「三 / 個」不要拆開
+  if (TAIL_WORDS.has(b.w)) c += 8;
+  if (LINE_START.has(b.w)) c -= 4;
+  if (!a.brk && LINE_START.has(a.w)) c += 7;   // 「其實」這類詞不要掛在一行最後
+  if (!a.brk && /^[我你他她它]$/.test(b.w)) c += 3;   // 「問 / 我」動詞後面接受詞,不要拆
+  if (!a.brk && /[了喔啊吧呢嗎啦耶]$/.test(a.w)) c -= 3;   // 語尾詞後面通常是一句話結束
+  if (!a.brk && /的$/.test(a.w)) c += 6;   // 「好看的 / 影片」不要拆開
+  if (!a.brk && /[個種些位件次條隻款支張]$/.test(a.w) && a.w.length <= 3) c += 6;   // 「三個 / 重點」不要拆開
+  return c;
+}
+function layout(units, mn, mx) {         // 找出整體最自然的斷法
+  const n = units.length, best = Array(n + 1).fill(Infinity), from = Array(n + 1).fill(0), mid = (mn + mx) / 2;
+  best[0] = 0;
+  for (let i = 1; i <= n; i++) {
+    let L = 0, inner = 0;
+    for (let j = i - 1; j >= 0; j--) {
+      L += units[j].n;
+      if (j < i - 1) inner += (units[j].gap > 1 ? 60 : 0) + (units[j].brk >= 3 ? 14 : 0);
+      if (L > mx * 2 && j < i - 1) break;
+      let c = 1 + Math.abs(L - mid) * 0.4 + inner;
+      if (L > mx) c += i - j === 1 ? 3 : L === mx + 1 ? 6 : (L - mx) * 12;
+      else if (L < mn) {
+        const whole = (j === 0 || units[j - 1].brk >= 3 || units[j - 1].gap > 0.4) && (i === n || units[i - 1].brk >= 3);
+        c += (mn - L) * (whole ? 1.5 : 5);   // 前後都有停頓的短句(例如「對」)可以單獨一行
+      }
+      if (i < n) c += breakCost(units[i - 1], units[i]);
+      c += best[j];
+      if (c < best[i]) { best[i] = c; from[i] = j; }
+    }
+  }
+  const lines = [];
+  for (let i = n; i > 0; i = from[i]) lines.unshift([from[i], i]);
+  return lines;
 }
 function cleanText(s, noPunct) {
   s = s.trim();
   if (noPunct) s = s.replace(/[，。！？、；：,.!?;:…~～]+/g, ' ').replace(/\s+/g, ' ').trim();
   return s;
 }
-function chunksToSubs(chunks, duration, maxChars, noPunct) {
-  const out = []; let last = '';
+function chunksToUnits(chunks, duration) {
+  const all = []; let last = '';
   chunks.forEach((c, i) => {
     let [s, e] = c.timestamp || [0, null];
-    if (s == null) s = out.length ? out[out.length - 1].end : 0;
+    if (s == null) s = all.length ? all[all.length - 1].e : 0;
     if (e == null || e <= s) e = chunks[i + 1]?.timestamp?.[0] ?? duration;
     if (e <= s) e = s + 1;
-    const txt = toTW(c.text || '');
-    if (txt.trim() === last) return;           // 去掉 AI 偶爾重複的同一句
-    last = txt.trim();
-    splitSeg(txt, s, e, maxChars).forEach(x => { x.text = cleanText(x.text, noPunct); if (x.text) out.push(x); });
+    const txt = toTW(c.text || '').trim();
+    if (!txt || txt === last) return;    // 去掉 AI 偶爾重複的同一句
+    last = txt;
+    const us = toUnits(txt), T = us.reduce((a, u) => a + u.n, 0) || 1;
+    let o = 0;
+    us.forEach(u => { u.s = s + (e - s) * o / T; o += u.n; u.e = s + (e - s) * o / T; });
+    if (us.length) us[us.length - 1].brk = 3;
+    all.push(...us);
   });
-  return out;
+  for (let k = 0; k < all.length - 1; k++) all[k].gap = all[k + 1].s - all[k].e;
+  return all;
+}
+function makeSubs(chunks, duration, mn, mx, noPunct) {
+  const units = chunksToUnits(chunks, duration);
+  return layout(units, mn, mx)
+    .map(([j, i]) => ({ start: units[j].s, end: units[i - 1].e, text: cleanText(units.slice(j, i).map(u => u.t).join(''), noPunct) }))
+    .filter(x => x.text);
+}
+function fillGaps(list) {                // 每句的結束時間 = 下一句的開始時間
+  for (let k = 0; k < list.length - 1; k++) if (list[k + 1].start > list[k].start) list[k].end = list[k + 1].start;
+  return list;
 }
 
 /* ---------- 音訊解碼(轉成 16kHz 單聲道) ---------- */
@@ -313,12 +384,65 @@ function renderSubs() {
   if (!subs.length) { box.innerHTML = '<p class="empty">沒有辨識到說話內容,請確認音檔有聲音。</p>'; return; }
   subs.forEach((s, i) => {
     const row = document.createElement('div'); row.className = 'sub';
-    const t = document.createElement('time'); t.textContent = fmt(s.start).slice(3, 8) + ' – ' + fmt(s.end).slice(3, 8);
+    const t = document.createElement('time'); t.textContent = fmt(s.start).slice(3, 10) + ' – ' + fmt(s.end).slice(3, 10);
     const inp = document.createElement('input'); inp.id = 'sub' + i; inp.value = s.text;
     inp.oninput = () => { subs[i].text = inp.value; };
+    inp.onkeydown = e => editKey(e, i, inp);
     row.append(t, inp); box.append(row);
   });
 }
+/* 快捷鍵:Enter 從游標處拆成兩句;在句首按 Backspace 併到上一句;在句尾按 Delete 把下一句併進來 */
+function focusSub(i, pos) {
+  const el = $('sub' + i); if (!el) return;
+  el.focus(); el.setSelectionRange(pos, pos);
+}
+function rerenderKeep(i, pos) {
+  const box = $('subsA'), top = box.scrollTop;
+  renderSubs(); box.scrollTop = top; focusSub(i, pos);
+}
+function editKey(e, i, inp) {
+  if (e.isComposing || e.keyCode === 229) return;          // 注音選字中,不處理
+  const a = inp.selectionStart, b = inp.selectionEnd, v = inp.value;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const left = v.slice(0, a).trimEnd(), right = v.slice(b).trimStart();
+    if (!left || !right) { focusSub(i + 1, 0); return; }     // 游標在頭尾:跳到下一句
+    const s = subs[i], total = vlen(left) + vlen(right) || 1;
+    const mid = s.start + (s.end - s.start) * vlen(left) / total;
+    subs.splice(i, 1, { start: s.start, end: mid, text: left }, { start: mid, end: s.end, text: right });
+    rerenderKeep(i + 1, 0);
+  } else if (e.key === 'Backspace' && a === 0 && b === 0 && i > 0) {
+    e.preventDefault();
+    const prev = subs[i - 1], pos = prev.text.length;
+    prev.text += v; prev.end = subs[i].end;
+    subs.splice(i, 1);
+    rerenderKeep(i - 1, pos);
+  } else if (e.key === 'Delete' && a === v.length && b === v.length && i < subs.length - 1) {
+    e.preventDefault();
+    const next = subs[i + 1];
+    subs[i].text = v + next.text; subs[i].end = next.end;
+    subs.splice(i + 1, 1);
+    rerenderKeep(i, v.length);
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const j = i + (e.key === 'ArrowDown' ? 1 : -1);
+    focusSub(j, Math.min(a, (subs[j]?.text || '').length));
+  }
+}
+
+/* 改設定時直接重新斷句,不用重新辨識 */
+let lastChunks = null, lastDuration = 0;
+function recompute() {
+  if (!lastChunks) return;
+  let mn = parseInt($('minChars').value) || 5, mx = parseInt($('maxChars').value) || 8;
+  mn = Math.max(2, Math.min(20, mn)); mx = Math.max(4, Math.min(30, mx));
+  if (mn > mx) [mn, mx] = [mx, mn];
+  subs = makeSubs(lastChunks, lastDuration, mn, mx, $('noPunct').checked);
+  if ($('fillGap').checked) fillGaps(subs);
+  renderSubs();
+  $('dlA').disabled = !subs.length;
+}
+['minChars', 'maxChars', 'noPunct', 'fillGap'].forEach(id => $(id).addEventListener('change', recompute));
 
 $('goA').onclick = async () => {
   if (!fileA) return;
@@ -346,9 +470,8 @@ $('goA').onclick = async () => {
       tick(); timer = setInterval(tick, 1000);
     } else if (m.type === 'done') {
       clearInterval(timer);
-      const maxC = Math.min(30, Math.max(6, parseInt($('maxChars').value) || 12));
-      subs = chunksToSubs(m.chunks, audio.duration, maxC, $('noPunct').checked);
-      renderSubs();
+      lastChunks = m.chunks; lastDuration = audio.duration;
+      recompute();
       setStatus(`完成!共 ${subs.length} 句字幕`, '往下檢查一下有沒有錯字,然後按下載。', 100, 'msg-ok');
       $('dlA').disabled = !subs.length; $('goA').disabled = false;
       wakeLock?.release?.().catch(() => {});
