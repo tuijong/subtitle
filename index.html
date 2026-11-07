@@ -75,6 +75,8 @@ input[type=checkbox]{width:24px;height:24px}
 .sub input{min-width:0;font:18px var(--f-body);padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .empty{color:var(--muted);font-size:16px;margin:0}
 @media (max-width:480px){.sub{grid-template-columns:1fr;gap:2px}}
+.mode{display:flex;flex-direction:column;gap:6px;font-size:16px;font-weight:700}
+.mode select{font-weight:500}
 .note{font-size:15px;color:var(--muted);line-height:1.6}
 .note b{color:var(--ink)}
 </style>
@@ -89,9 +91,11 @@ input[type=checkbox]{width:24px;height:24px}
   <div class="step" id="preload" hidden>
     <div id="preloadAsk" style="display:flex;flex-direction:column;gap:14px">
       <h2>第一次使用?先下載 AI 模型</h2>
-      <p class="hint">模型大約 100~250 MB,只要下載一次,之後打開這個網頁就能直接轉字幕。建議在網路穩定的地方先下載好。</p>
+      <p class="hint">只要下載一次,之後打開這個網頁就能直接轉字幕。建議在網路穩定的地方先下載好。<br>
+      <b>高準確模型</b>專門辨識台灣華語和中英夾雜,錯字少很多,但檔案大,需要較新的電腦(用 Chrome 或 Edge)。平板或舊電腦請選標準模型。</p>
       <div class="row">
-        <button class="btn yellow" id="preloadGo">下載 AI 模型</button>
+        <button class="btn yellow" id="preloadHi">下載高準確模型(約 1.6 GB)</button>
+        <button class="btn" id="preloadGo">下載標準模型(約 200 MB)</button>
         <button class="btn ghost" id="preloadSkip">先不用</button>
       </div>
       <div class="status" id="preloadStatus" hidden>
@@ -121,13 +125,6 @@ input[type=checkbox]{width:24px;height:24px}
       <details>
         <summary>進階設定(不懂可以不用動)</summary>
         <div class="opts">
-          <label>辨識模式
-            <select id="model">
-              <option value="auto">自動(建議)</option>
-              <option value="small">準確(較慢)</option>
-              <option value="base">快速(較不準)</option>
-            </select>
-          </label>
           <label>每句最少幾個字
             <input type="number" id="minChars" value="5" min="2" max="20">
           </label>
@@ -142,6 +139,13 @@ input[type=checkbox]{width:24px;height:24px}
 
     <div class="step">
       <h2><span class="num">2</span>開始轉字幕</h2>
+      <label class="mode">辨識模式
+        <select id="model">
+          <option value="auto">標準(約 200 MB,平板也能用)</option>
+          <option value="breeze">高準確・台灣華語(約 1.6 GB,需要較新的電腦)</option>
+          <option value="base">快速(較不準,舊電腦用)</option>
+        </select>
+      </label>
       <button class="btn big yellow" id="goA" disabled>開始轉字幕</button>
       <div class="status" id="statusA" hidden>
         <p id="statusTextA"></p>
@@ -356,8 +360,13 @@ async function hasWebGPU() {
   try { const a = navigator.gpu && await navigator.gpu.requestAdapter(); return a ? { f16: a.features.has('shader-f16') } : null; } catch { return null; }
 }
 async function load(size, gpu) {
-  const id = 'onnx-community/whisper-' + size;
   const progress_callback = p => self.postMessage({ type: 'load', p });
+  if (size === 'breeze') {
+    if (!gpu) throw new Error('NO_GPU');
+    return await pipeline('automatic-speech-recognition', 'markno5/Breeze-ASR-25-ONNX',
+      { device: 'webgpu', dtype: gpu.f16 ? 'q4f16' : 'q8', progress_callback });
+  }
+  const id = 'onnx-community/whisper-' + size;
   if (gpu) {
     try {
       return await pipeline('automatic-speech-recognition', id, { device: 'webgpu', progress_callback,
@@ -395,14 +404,25 @@ function markReady() { try { localStorage.setItem(READY_KEY, '1'); } catch (e) {
 async function modelCached() {
   let flag = false; try { flag = localStorage.getItem(READY_KEY) === '1'; } catch (e) {}
   if (!flag) return false;
-  try { const c = await caches.open('transformers-cache'); return (await c.keys()).some(r => r.url.includes('whisper-')); }
+  try { const c = await caches.open('transformers-cache'); return (await c.keys()).some(r => /whisper-|Breeze-ASR/.test(r.url)); }
   catch (e) { return false; }
 }
 function preloadDoneUI() { $('preload').hidden = false; $('preloadAsk').hidden = true; $('preloadDone').hidden = false; }
 (async () => { if (await modelCached()) preloadDoneUI(); else $('preload').hidden = false; })();
 $('preloadSkip').onclick = () => { $('preload').hidden = true; };
-$('preloadGo').onclick = () => {
-  $('preloadGo').disabled = true; $('preloadSkip').hidden = true;
+function errText(msg) {
+  if (/NO_GPU/.test(msg)) return '這台電腦或瀏覽器跑不動高準確模式。請改用電腦版 Chrome 或 Edge,或把辨識模式換回「標準」。';
+  if (/memory|Memory|OOM|allocation/.test(msg)) return '電腦記憶體不夠,跑不動這個模式。請把辨識模式換回「標準」再試一次。';
+  return '請確認網路有連線、重新整理頁面再試一次。(' + msg + ')';
+}
+const MODEL_KEY = 'subtitle-helper-model';
+try { const v = localStorage.getItem(MODEL_KEY); if (v && [...$('model').options].some(o => o.value === v)) $('model').value = v; } catch (e) {}
+$('model').addEventListener('change', () => { try { localStorage.setItem(MODEL_KEY, $('model').value); } catch (e) {} });
+$('preloadGo').onclick = () => startPreload('auto');
+$('preloadHi').onclick = () => startPreload('breeze');
+function startPreload(model) {
+  $('model').value = model; $('model').dispatchEvent(new Event('change'));
+  $('preloadGo').disabled = $('preloadHi').disabled = true; $('preloadSkip').hidden = true;
   $('preloadStatus').hidden = false; $('preloadText').textContent = '正在準備下載…';
   $('preloadBar').classList.add('indet'); $('preloadSub').textContent = '';
   const files = {}, w = getWorker();
@@ -418,13 +438,14 @@ $('preloadGo').onclick = () => {
       w.removeEventListener('message', h); markReady(); preloadDoneUI();
     } else if (m.type === 'error') {
       w.removeEventListener('message', h);
-      $('preloadText').textContent = '下載失敗,請確認網路有連線,再按一次「下載 AI 模型」。';
-      $('preloadBar').classList.remove('indet'); $('preloadGo').disabled = false;
+      $('preloadText').textContent = '下載失敗:' + errText(m.msg);
+      $('preloadBar').classList.remove('indet'); $('preloadGo').disabled = $('preloadHi').disabled = false;
+      worker?.terminate(); worker = null;
     }
   };
   w.addEventListener('message', h);
-  w.postMessage({ preload: true, model: $('model').value });
-};
+  w.postMessage({ preload: true, model });
+}
 
 /* ---------- 模式 A 流程 ---------- */
 let fileA = null, subs = [], timer = null, wakeLock = null;
@@ -538,7 +559,7 @@ $('goA').onclick = async () => {
       wakeLock?.release?.().catch(() => {});
     } else if (m.type === 'error') {
       clearInterval(timer);
-      setStatus('轉換失敗', '請確認網路有連線、重新整理頁面再試一次。(' + m.msg + ')', null, 'msg-err');
+      setStatus('轉換失敗', errText(m.msg), null, 'msg-err');
       $('goA').disabled = false; worker?.terminate(); worker = null;
     }
   };
