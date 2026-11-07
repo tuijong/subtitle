@@ -22,6 +22,7 @@
   --line:#2b3644; --screen:#0a0e14; --sub:#ffd23f; --sub-ink:#2a2200;
   --ok:#5cc28d; --err:#ff8a80; --accent:#7fb2ec; color-scheme:dark;}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.65 var(--f-body);
   padding:env(safe-area-inset-top,0) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0) max(16px,env(safe-area-inset-left,0px))}
@@ -84,6 +85,23 @@ input[type=checkbox]{width:24px;height:24px}
     <h1>口播<span>字幕</span>小幫手</h1>
     <p>把口播的音檔丟進來,自動聽打成字幕,直接變成台灣繁體的 SRT 檔,再匯回 CapCut 就完成了。</p>
   </header>
+
+  <div class="step" id="preload" hidden>
+    <div id="preloadAsk" style="display:flex;flex-direction:column;gap:14px">
+      <h2>第一次使用?先下載 AI 模型</h2>
+      <p class="hint">模型大約 100~250 MB,只要下載一次,之後打開這個網頁就能直接轉字幕。建議在網路穩定的地方先下載好。</p>
+      <div class="row">
+        <button class="btn yellow" id="preloadGo">下載 AI 模型</button>
+        <button class="btn ghost" id="preloadSkip">先不用</button>
+      </div>
+      <div class="status" id="preloadStatus" hidden>
+        <p id="preloadText"></p>
+        <div class="bar" id="preloadBar"><i></i></div>
+        <p class="hint" id="preloadSub"></p>
+      </div>
+    </div>
+    <p class="msg-ok" id="preloadDone" hidden style="margin:0;font-weight:700">✔ AI 模型已經下載好了,可以直接丟音檔轉字幕。</p>
+  </div>
 
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" id="tabA" aria-selected="true">🎙️ 音檔 → 繁體字幕</button>
@@ -334,7 +352,6 @@ async function decodeAudio(file) {
 const workerCode = `
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
 env.allowLocalModels = false;
-let asr = null, key = '';
 async function hasWebGPU() {
   try { const a = navigator.gpu && await navigator.gpu.requestAdapter(); return a ? { f16: a.features.has('shader-f16') } : null; } catch { return null; }
 }
@@ -349,12 +366,18 @@ async function load(size, gpu) {
   }
   return await pipeline('automatic-speech-recognition', id, { device: 'wasm', dtype: 'q8', progress_callback });
 }
+const models = {};
+function getModel(size, gpu) {
+  if (!models[size]) models[size] = load(size, gpu).catch(err => { delete models[size]; throw err; });
+  return models[size];
+}
 self.onmessage = async (e) => {
-  const { audio, model } = e.data;
+  const { audio, model, preload } = e.data;
   try {
     const gpu = await hasWebGPU();
     const size = model === 'auto' ? (gpu ? 'small' : 'base') : model;
-    if (!asr || key !== size) { asr = await load(size, gpu); key = size; }
+    const asr = await getModel(size, gpu);
+    if (preload) { self.postMessage({ type: 'ready', size, gpu: !!gpu }); return; }
     self.postMessage({ type: 'start', size, gpu: !!gpu });
     const out = await asr(audio, { language: 'chinese', task: 'transcribe', return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 });
     self.postMessage({ type: 'done', chunks: out.chunks || [{ timestamp: [0, null], text: out.text }] });
@@ -365,6 +388,43 @@ function getWorker() {
   if (!worker) worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: 'text/javascript' })), { type: 'module' });
   return worker;
 }
+
+/* ---------- 預先下載模型 ---------- */
+const READY_KEY = 'subtitle-helper-model-ready';
+function markReady() { try { localStorage.setItem(READY_KEY, '1'); } catch (e) {} }
+async function modelCached() {
+  let flag = false; try { flag = localStorage.getItem(READY_KEY) === '1'; } catch (e) {}
+  if (!flag) return false;
+  try { const c = await caches.open('transformers-cache'); return (await c.keys()).some(r => r.url.includes('whisper-')); }
+  catch (e) { return false; }
+}
+function preloadDoneUI() { $('preload').hidden = false; $('preloadAsk').hidden = true; $('preloadDone').hidden = false; }
+(async () => { if (await modelCached()) preloadDoneUI(); else $('preload').hidden = false; })();
+$('preloadSkip').onclick = () => { $('preload').hidden = true; };
+$('preloadGo').onclick = () => {
+  $('preloadGo').disabled = true; $('preloadSkip').hidden = true;
+  $('preloadStatus').hidden = false; $('preloadText').textContent = '正在準備下載…';
+  $('preloadBar').classList.add('indet'); $('preloadSub').textContent = '';
+  const files = {}, w = getWorker();
+  const h = ({ data: m }) => {
+    if (m.type === 'load' && m.p.status === 'progress' && m.p.total) {
+      files[m.p.file] = m.p;
+      let l = 0, T = 0; Object.values(files).forEach(f => { l += f.loaded; T += f.total; });
+      $('preloadBar').classList.remove('indet');
+      $('preloadBar').querySelector('i').style.width = Math.round(l / T * 100) + '%';
+      $('preloadText').textContent = '正在下載 AI 模型…';
+      $('preloadSub').textContent = `${(l / 1048576).toFixed(0)} / ${(T / 1048576).toFixed(0)} MB · 下載完前請不要關掉網頁`;
+    } else if (m.type === 'ready' || m.type === 'start') {
+      w.removeEventListener('message', h); markReady(); preloadDoneUI();
+    } else if (m.type === 'error') {
+      w.removeEventListener('message', h);
+      $('preloadText').textContent = '下載失敗,請確認網路有連線,再按一次「下載 AI 模型」。';
+      $('preloadBar').classList.remove('indet'); $('preloadGo').disabled = false;
+    }
+  };
+  w.addEventListener('message', h);
+  w.postMessage({ preload: true, model: $('model').value });
+};
 
 /* ---------- 模式 A 流程 ---------- */
 let fileA = null, subs = [], timer = null, wakeLock = null;
@@ -470,6 +530,7 @@ $('goA').onclick = async () => {
       tick(); timer = setInterval(tick, 1000);
     } else if (m.type === 'done') {
       clearInterval(timer);
+      markReady(); if (!$('preload').hidden) preloadDoneUI();
       lastChunks = m.chunks; lastDuration = audio.duration;
       recompute();
       setStatus(`完成!共 ${subs.length} 句字幕`, '往下檢查一下有沒有錯字,然後按下載。', 100, 'msg-ok');
